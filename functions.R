@@ -215,6 +215,89 @@ run.cluster <- function(disease, min.n, n.hosts, runs, imp, dur) {
 
 }
 
+## Phybreak simulation - outbreak model
+run.o.p.cluster <- function(disease, min.n, n.hosts, runs) {
+  
+  config <- create.config(min.n = min.n,
+                          n.hosts = n.hosts)
+  
+  param <- create.param()
+  param <- list(tmp = param[[disease]])
+  names(param) <- disease
+  param[[disease]]$w[param[[1]]$w == 0] <- 1e-50
+
+  store <- list()
+
+  for(i in seq_len(runs)) {
+    
+    mean.gen <- param[[disease]]$w.mean
+    shape.gen <- param[[disease]]$w.mean^2/param[[disease]]$w.sd^2
+    mean.sample <- param[[disease]]$w.mean
+    shape.sample <- param[[disease]]$w.mean^2/param[[disease]]$w.sd^2
+
+    seql <- param[[disease]]$seql
+    mut = param[[disease]]$mut
+
+    if(seql > 1e6) {
+      seql <- round(seql/100, 0)
+      mut <- mut*100
+    }
+    
+    sim.n <- 0
+
+    while(sim.n < min.n) {
+      
+      sim <- sim.phybreak(obsize = NA,
+                          popsize = n.hosts,
+                          R0 = param[[disease]]$R0,
+                          mean.gen = mean.gen,
+                          shape.gen = shape.gen,
+                          mean.sample = mean.sample,
+                          shape.sample = shape.sample,
+                          sequence.length = seql,
+                          mu = mut,
+                          wh.model = 2,
+                          wh.slope = 1)
+
+      ## Check for no-transmission
+      if(inherits(sim, 'character')) next
+      
+      sim.n <- length(sim$sample.hosts)
+
+    }
+
+    dna.outb.data <- list(w_dens = param[[disease]]$w,
+                          dna = as.DNAbin(sim$sequences),
+                          dates = sim$sample.times)
+
+    nodna.outb.data <- dna.outb.data
+    nodna.outb.data$dna <- NULL
+
+    outb.config <- list(n_iter = 1e5, sample_every = 200, find_import=FALSE,
+                        move_kappa = FALSE, move_pi = FALSE, init_kappa = 1,
+                        init_pi = 1, max_kappa = 1)
+
+    dna.outb.result <- outbreaker2::outbreaker(dna.outb.data, outb.config)
+    nodna.outb.result <- outbreaker2::outbreaker(nodna.outb.data, outb.config)
+
+    store$dna.result[[i]] <- dna.outb.result
+    store$nodna.result[[i]] <- nodna.outb.result
+
+    store$dna.acc[[i]] <- get.o.p.acc(dna.outb.result, sim)
+    store$nodna.acc[[i]] <- get.o.p.acc(nodna.outb.result, sim)
+    store$uniq[[i]] <- get.phyb.uniq(sim)
+    
+    store$param <- param
+    store$config <- config
+    store$phyb.sim[[i]] <- sim
+    store$phyb.gensig[[i]] <- get.phyb.gensig(sim)
+
+  }
+
+  return(store)
+  
+}
+
 ## Returns the accuracy of transmission tree inference
 get.acc <- function(res, sim, burnin = 1000) {
 
@@ -235,6 +318,21 @@ get.phyb.acc <- function(res, sim) {
 
   mean(transtree(res, "edmonds")$infector == sim$sim.infectors)
 
+}
+
+## Returns the accuracy of a phybreak simulation using outbreaker
+get.o.p.acc <- function(res, sim, burnin = 1000) {
+  
+  inferred <- summary(res, burnin = burnin)$tree$from
+  true <- sim$sim.infectors
+
+  inferred[!is.na(inferred)] <- paste0('host.', inferred[!is.na(inferred)])
+  inferred[is.na(inferred)] <- 'index'
+
+  acc <- mean(inferred == true)
+
+  return(acc)
+  
 }
 
 ## Calculate the entropy of a vector
@@ -310,7 +408,7 @@ create.param <- function(param = NULL) {
     tb    = list(R0 = 1.8 , mut = 2.36e-10, seql = 4411621 , w.mean = 324  , w.sd = 385 , dist = "gamma" ),
     cdif  = list(R0 = 1.5 , mut = 8.76e-10, seql = 4290252 , w.mean = 27.7 , w.sd = 14.9, dist = 'gamma' ))
 
-  defaults$tb$w.sd <- defaults$tb$w.sd
+  defaults$tb$w.sd <- defaults$tb$w.sd/2
 
   defaults$klebs$mut <- defaults$klebs$mut*7
   for(i in c("w.mean", "w.sd")) defaults$klebs[[i]] <- defaults$klebs[[i]]/7
@@ -768,7 +866,7 @@ create.axlab <- function(input) {
                  uniq = 'Number of unique sequences / outbreak size',
                  dna.ent = 'Entropy',
                  nodna.ent = 'Entropy',
-                 n = 'Outbreak size')
+                 n  = 'Outbreak size')
 
   if(!input %in% names(reference)) {
     return(input)
