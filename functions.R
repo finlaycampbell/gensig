@@ -1,5 +1,15 @@
 ##====== Sending off to the cluster =====##
 
+## Libraries
+load.libs <- function() {
+
+  libs <- c('ggplot2', 'reshape2', 'scales', 'plyr', 'dplyr', 'magrittr',
+            'tidyr', 'ggrepel', 'lazyeval', 'nls2', 'ape', 'phybreak')
+
+  invisible(lapply(libs, require, character.only = TRUE))
+
+}
+
 ## Set up parameters for cluster run
 cluster.param <- function() {
   diseases <- names(create.param())
@@ -266,9 +276,13 @@ run.o.p.cluster <- function(disease, min.n, n.hosts, runs) {
 
     }
 
+    ## Make sure dna labels match case labels
+    dna <- as.DNAbin(sim$sequences)
+    rownames(dna) <- seq_along(sim$sample.times)
+    
     dna.outb.data <- list(w_dens = param[[disease]]$w,
-                          dna = as.DNAbin(sim$sequences),
-                          dates = sim$sample.times)
+                          dna = dna,
+                          dates = round(sim$sample.times, 0))
 
     nodna.outb.data <- dna.outb.data
     nodna.outb.data$dna <- NULL
@@ -644,7 +658,7 @@ set.up <- function(clust = 'mrc') {
 }
 
 ## Create a storage vector for gensig values
-create.store <- function(obj, bundle.name, dir, load = FALSE, dl = TRUE, phyb = FALSE) {
+create.store <- function(obj, bundle.name, dir, load = FALSE, dl = TRUE, mod = 'ob') {
 
   cur.wd <- getwd()
   on.exit(setwd(cur.wd))
@@ -662,7 +676,13 @@ create.store <- function(obj, bundle.name, dir, load = FALSE, dl = TRUE, phyb = 
   if(length(rem) > 0) files <- files[-grep("store", files)]
   n.files <- length(files)
 
-  if(!phyb) adder <- add_r else adder <- add_phyb_r
+  if(mod == 'ob') {
+    adder <- add_r
+  } else if(mod == 'phyb') {
+    adder <- add_phyb_r
+  } else if(mod == 'o.p') {
+    adder <- add_o_p_r
+  }
   
   if(load) {
     pb <- txtProgressBar(min = 1, max = length(files), style = 3)
@@ -772,6 +792,42 @@ add_phyb_r <- function(store, r) {
 
 }
 
+## Adds phyb_r loaded from cluster or file to store
+add_o_p_r <- function(store, r) {
+
+  gensig <- data.frame(disease = names(r$param),
+                       gensig = unlist(r$phyb.gensig))
+
+  acc <- data.frame(disease = names(r$param),
+                    dna = r$dna.acc,
+                    nodna = r$nodna.acc)
+
+  acc$improv <- with(acc, dna - nodna)
+  acc$gensig <- ldply(r$phyb.gensig, mean)$V1
+  acc$prop <- unlist(ldply(r$phyb.gensig, get.prop))
+  ## Determine uniq empirically if it exist - otherwise do analytically from prop
+  ## They should be the same in a single tree with one introduction
+  if(!is.null(r$uniq)) {
+    acc$uniq <- r$uniq
+  } else if(!is.null(r$phyb.sim)) {
+    acc$uniq <- sapply(seq_along(r$phyb.sim),
+                       function(i) get.phyb.uniq(r$phyb.sim[[i]]))
+  }
+  acc$dna.ent <- sapply(seq_along(r$dna.result),
+                        function(i) get.ent(r$dna.result[[i]]))
+  acc$nodna.ent <- sapply(seq_along(r$nodna.result),
+                        function(i) get.ent(r$nodna.result[[i]]))
+  acc$w.neg <- sapply(seq_along(r$phyb.sim),
+                      function(i) mean(get.phyb.w(r$phyb.sim[[i]]) < 0))
+  acc$n <- sapply(seq_along(r$phyb.sim), function(i) length(r$phyb.sim[[i]]$sample.hosts))
+  
+  store$gensig <- rbind(store$gensig, gensig)
+  store$acc <- rbind(store$acc, acc)
+
+  return(store)
+
+}
+
 ## Get the mean generation time of a simOutbreak object
 get.w <- function(sim) {
 
@@ -784,8 +840,8 @@ get.w <- function(sim) {
 ## Get the serial interval  of a phybreak simulation
 get.phyb.w <- function(sim) {
 
-  ances.inftime <- sim$sim.infection.times[match(sim$sim.infectors, sim$sample.hosts)]
-  out <- sim$sim.infection.times - ances.inftime
+  ances.inftime <- sim$sample.times[match(sim$sim.infectors, sim$sample.hosts)]
+  out <- sim$sample.times - ances.inftime
   out <- as.vector(out[!is.na(out)])
   return(out)
   
